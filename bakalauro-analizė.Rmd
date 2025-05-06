@@ -1,0 +1,2037 @@
+# Pasiruošimas
+
+```{r}
+getRversion()
+```
+
+```{r}
+# Įkeliamos reikalingos bibliotekos
+library(tidyr)
+library(haven)
+library(dplyr)
+library(ggplot2)
+library(MatchIt)
+```
+
+# Duomenų skaitymas
+
+```{r}
+
+# Funkcija, skirta perskaityti ir sujungti SHARE failus.
+read_all_waves <- function(waves, file_path, keep_vars, same_vars, files_to_read) {
+  combined_wave_data <- NULL
+  
+  # Sukuriame įkelimo statuso lentelę, kad matytume, kuriuos duomenų failus pavyko perskaityti
+  file_read_status <- data.frame(matrix(0, nrow = length(waves), ncol = length(files_to_read)))
+  colnames(file_read_status) <- files_to_read
+  rownames(file_read_status) <- paste0("Wave_", waves)
+  
+  # Sukuriame įkelimo statuso lentelę, kad matytume, kuriuos kintamuosius pavyko perskaityti
+  var_status <- data.frame(matrix(0, nrow = length(waves), ncol = length(keep_vars)))
+  colnames(var_status) <- keep_vars
+  rownames(var_status) <- paste0("Wave_", waves)
+
+  # Cikliškai einame per kiekvieną bangą ir skaitome reikiamus duomenų failus.
+  for (wave_number in waves) {
+    wave_data <- NULL # Sukuriame tuščią duomenų struktūrą, į kurią kelsime duomenis iš failų
+
+    # Cikliškai einame per kiekvieną reikiamą duomenų failą bangoje ir prijungiame prie savo duomenų struktūros, iki kol perskaitome visus duomenų failus.
+    for (file_name in files_to_read) {
+      
+      # Sukuriame nuorodą į duomenų failą
+      folder_path_name <- paste0("/sharew", wave_number, "_rel9-0-0_ALL_datasets_spss")
+      file_path_name <- paste0("/sharew", wave_number, "_rel9-0-0_", file_name, ".sav")
+      full_path <- file.path(file_path, folder_path_name, file_path_name)
+      
+      # Tikriname, ar duomenų failas egzistuoja
+      if (file.exists(full_path)) {
+        
+        # Skaitome duomenų failą
+        file <- read_sav(full_path)
+        selected_vars <- names(variable_source_map)[variable_source_map == file_name]
+        selected_vars <- selected_vars[selected_vars %in% names(file)]
+        file <- file %>% select(mergeid, all_of(selected_vars))
+        
+        file_read_status[rownames(file_read_status) == paste0("Wave_", wave_number), file_name] <- 1 # Jei pavyko perskaityti - 1.
+        
+        # Jeigu tai pirmas perskaitytas failas bangoje, tiesiog įkeliame jį į duomenų struktūrą (ji tuščia)
+        if (is.null(wave_data)) {
+          wave_data <- file
+        } 
+        # Jeigu tai ne pirmas perskaitytas failas bangoje, prijungiame jį prie mūsų turimos duomenų struktūros. Jeigu kitas duomenų failas turi kintamuosius, kurie jau yra nuskaityti - jų neįtraukiame.
+        else {
+          overlapping_cols <- intersect(names(wave_data), names(file))
+          overlapping_cols <- setdiff(overlapping_cols, "mergeid")
+          
+          wave_data <- wave_data %>%
+            inner_join(file %>% select(-all_of(overlapping_cols)), by = "mergeid")
+        } 
+      }
+    }
+
+    # Tikriname, kokie kintamieji yra reikalingi perskaityti ir ar juos pavyko perskaityti
+    missing_vars <- setdiff(keep_vars, names(wave_data))
+    var_status[rownames(var_status) == paste0("Wave_", wave_number), names(wave_data)[names(wave_data) %in% keep_vars]] <- 1
+    
+    # Išfiltruojami nereikalingi kintamieji
+    existing_vars <- intersect(keep_vars, names(wave_data))
+    wave_data <- wave_data %>%
+      select(all_of(existing_vars))
+    
+    # Prie kintamųjų prirašomas bangos nr.
+    colnames(wave_data) <- sapply(existing_vars, function(name) if (name %in% same_vars) name else paste0(name, "_", wave_number))
+    
+    # Sukuriamas bangos nr. kintamasis
+    wave_data <- wave_data %>% 
+      mutate(wave = wave_number)
+    
+    # Visi bangos duomenys prijungiami prie ankstesnių bangų.
+    if (is.null(combined_wave_data)) {
+      combined_wave_data <- wave_data
+    } else {
+      combined_wave_data <- bind_rows(combined_wave_data, wave_data)
+    }
+  }
+  
+  # Išspausdinami duomenų failų ir kintamųjų perskaitymo lentelės
+  print(file_read_status)
+  print(var_status)
+
+  # Funkcija grąžina duomenų struktūrą su visais perskaitytais duomenimis.
+  return(combined_wave_data)
+}
+
+
+```
+
+```{r}
+# Nuoroda į aplanką su duomenų failais
+pc_path <- "/Users/rupsy/Desktop/Bakalauras/SHARE failai"
+
+# Sąrašas kintamųjų ir failų, kuriuos reikia perskaityti.
+variable_source_map <- list(
+  
+  # Demografiniai
+  "mergeid" = "dn",
+  "mergeidp" = "gv_imputations1",
+  "coupleid" = "gv_imputations1",
+  "country" = "dn",
+  "age" = "gv_imputations1",
+  "gender" = "gv_imputations1",
+  "mn101_" = "technical_variables",
+  "mn026_" = "technical_variables",
+  "int_year" = "cv_r",
+  "dn044_" = "dn",
+  "mstat" = "gv_imputations1",
+  "dn015_" = "dn", # Kada susituokė
+  "dn016_" = "dn", # Kada sukūrė registruotą partnerystę
+  "dn017_" = "dn", # Kada susituokė, jei gyvena atskirai
+  "dn018_" = "dn", # Kada išsiskyrė
+  
+  # Sveikata
+  "gali" = "gv_imputations1",
+  "sphus" = "gv_imputations1",
+  "chronic" = "gv_imputations1",
+  "phinact" = "gv_imputations1",
+  "maxgrip" = "gv_imputations1",
+  "esmoked" = "gv_imputations1",
+  "eurod" = "gv_imputations1",
+  "casp" = "gv_health",
+  
+  # Socioekonominiai
+  "yedu" = "gv_imputations1",
+  "isced" = "gv_imputations1",
+  "exrate" = "gv_imputations1",
+  "thinc" = "gv_imputations1",
+  "cjs" = "gv_imputations1",
+  "fdistress" = "gv_imputations1",
+  
+  # Vaikai
+  "nchild" = "gv_imputations1",
+  "ch006_1" = "ch",
+  "ch006_2" = "ch",
+  "ch006_3" = "ch",
+  "ch006_4" = "ch",
+  "ch006_5" = "ch",
+  "ch006_6" = "ch",
+  "ch006_7" = "ch",
+  "ch006_8" = "ch",
+  "ch006_9" = "ch",
+  "ch006_10" = "ch",
+  "ch006_11" = "ch",
+  "ch006_12" = "ch",
+  "ch006_13" = "ch",
+  "ch006_14" = "ch",
+  "ch006_15" = "ch",
+  "ch006_16" = "ch",
+  "ch006_17" = "ch",
+  "ch006_18" = "ch",
+  "ch006_19" = "ch",
+  "ch006_20" = "ch"
+
+)
+
+keep_vars <- names(variable_source_map)
+files_to_read <- unique(unlist(variable_source_map))
+
+# Sąrašas kintamųjų, kurie išlieka vienodi kiekvienoje bangoje (kuriems nereikia pridėti bangos nr.)
+same_vars <- c(
+                "mergeid"
+               )
+
+# Sąrašas kintamųjų, kuriuos reikia perskaityti iš imputacijos duomenų failo (gv_imputations)
+imp_vars <- c(
+               "mergeid", "mergeidp", "coupleid", "exrate", "thinc", "mstat", "gender", "yedu", "isced", "sphus", "nchild", "gali", "chronic", "eurod", "maxgrip", "phinact", "cjs", "age", "esmoked", "fdistress"
+            )
+
+# Sąrašas reikiamų bangų
+waves <- c(1, 2, 4, 5, 6, 7, 8, 9)
+
+```
+
+```{r}
+# for (wave_number in waves) {
+# 
+#     if(wave_number == 3) next # Praleidžiama 3 banga
+# 
+#      # Sukuriame nuorodą į failą
+#     folder_path <- paste0("/sharew", wave_number, "_rel9-0-0_ALL_datasets_spss")
+#     file_path <- paste0("/sharew", wave_number, "_rel9-0-0_gv_imputations.sav")
+#     full_path <- file.path(pc_path, folder_path, file_path)
+# 
+#     file_data <- read_sav(full_path)
+# 
+#     file_data <- file_data %>%
+#         filter(implicat == 1)
+# 
+#     file_data <- file_data %>%
+#         rename_with(~ "mergeidp", matches("^mergeidp\\d+$")) %>%
+#         rename_with(~ "coupleid", matches("^coupleid\\d+$"))
+#     existing_vars <- intersect(imp_vars, names(file_data))
+#     file_data <- file_data %>%
+#         select(all_of(existing_vars))
+# 
+#     save_path_name <- paste0("/sharew", wave_number, "_rel9-0-0_gv_imputations1.sav")
+#     save_path <- file.path(pc_path, folder_path, save_path_name)
+# 
+#     write_sav(file_data, save_path)
+# }
+```
+
+```{r}
+# Iškviečiame funkciją, kuri perskaito visus reikiamus duomenų failus ir grąžina juos į df_wide
+df_wide <- read_all_waves(waves, pc_path, keep_vars, same_vars, files_to_read)
+```
+
+```{r}
+# Duomenų failas surūšiuojamas pagal dalyvio id ir bangą.
+df_wide <- df_wide %>%
+  relocate(mergeid, wave) %>%
+  arrange(mergeid, wave)
+
+head(df_wide)
+```
+
+```{r}
+# Duomenų struktūra konvertuojama į ilgąjį (long) formatą.
+df_long <- df_wide %>%
+  pivot_longer(
+    cols = -c("mergeid"),
+    names_to = c(".value", "wave"),
+    names_pattern = "(.*)_(\\d+)"
+  )
+
+head(df_long)
+```
+
+```{r}
+# Išfiltruojame bangas, kuriose nėra nebuvo dalyvauta (kai bangos nr. yra NA ARBA kai yra tik mergeid ir banga, o visi kiti kintamieji yra NA)
+df_long <- df_long %>%
+    filter(!is.na(wave)) %>%
+    filter(if_any(-c(mergeid, wave), ~ !is.na(.)))
+
+# Patikriname, ar gerai išfiltravo - patikriname, ar išliko toks pats unikalių dalyvių skaičius kaip prieš verčiant į ilgąjį formątą.
+df_wide %>% summarise(unique_mergeids = n_distinct(mergeid))
+df_long %>% summarise(unique_mergeids = n_distinct(mergeid))
+
+head(df_long)
+```
+
+```{r}
+# Tikriname aprašomąją statistiką prieš tvarkydami duomenis
+df_wide %>%
+  group_by(wave) %>%
+  count()
+  
+```
+
+# Duomenų valymas ir tvarkymas
+
+## Trūkstamos reikšmės (missing'ai)
+
+```{r}
+# Visos reikšmės žemiau nei 0 yra paverčiamos NA
+# Trūkstamų reikšmių koduotė
+missing_codes <- c(-1, -2, -3, -4, -5, -7, -9, -91, -92, -93, -94, -95, -98, -99, -999991, -999992)
+
+# Trūkstamos reikšmės paverčiamos NA
+df_cleaned <- df_long %>%
+    mutate(across(-c(mergeid, wave, country), ~ if_else(. %in% missing_codes, NA, .)))
+
+df_cleaned <- df_cleaned %>%
+  mutate(
+    yedu = if_else(yedu == 9997, NA_real_, yedu),
+    cjs = if_else(cjs == 97, NA_real_, cjs)
+  ) %>%
+  mutate(across(
+    ch006_1:ch006_20,
+    ~ ifelse(. == 99999, NA, .)
+  ))
+
+```
+
+## Namų ūkio pajamos
+
+```{r}
+df_income <- df_cleaned
+```
+
+```{r}
+# Sukuriame kintamąjį, kuriame pajamos konvertuotos į eurus.
+df_income <- df_income %>%
+    mutate(
+      thinc_euro = thinc/exrate
+    )
+
+head(df_income)
+```
+
+## Vedybinio statuso pokytis
+
+```{r}
+df_mch <- df_income
+```
+
+```{r}
+# Sukuriame kintamąjį, kuris nurodo, ar pakito vedybinis statusas nuo buvusio tiriamojo matavimo
+df_mch <- df_mch %>%
+  arrange(mergeid, wave) %>%  
+  group_by(mergeid) %>%
+  mutate(row_nr = row_number()) %>%
+  mutate(
+    mstat_changed = case_when(
+      row_nr == 1 ~ NA,                   
+      mstat != lag(mstat) ~ 1,                 
+      mstat == lag(mstat) ~ 0                  
+    )
+  ) %>%
+  ungroup()
+```
+
+## Laikas nuo/iki skyrybų
+
+```{r}
+df_divlength <- df_mch
+```
+
+```{r}
+library(zoo)
+
+# Kintamasis perkeliamas iš ankstensių bangų, nes jo reikšmės nėra, jeigu ji nepakito nuo senesnės bangos
+df_divlength <- df_divlength %>%
+  arrange(mergeid, wave) %>%
+  group_by(mergeid) %>%
+  mutate(
+    # Reikšmė bus perkeliama tik tada, jeigu žmogus išsiskyrė, reikšmės nėra ir pakito vedybinis statusas nuo praeitos bangos
+    source_dn018 = ifelse(
+      mstat == 5 & !is.na(dn018_) &
+        ((dn044_ == 1 & mn101_ == 1) | mn101_ == 0 | is.na(mn101_)),
+      dn018_,
+      NA_real_
+    ),
+
+    # Reikšmė perkeliama iš ankstesnių bangų
+    dn018_carried = na.locf(source_dn018, na.rm = FALSE),
+    
+    # Reikšmė bus paimta tik tada, jeigu žmogus susituokęs, vedybinis statusas nepakito ir jei trūksta reikšmės.
+    dn018_new = case_when(
+      !is.na(dn018_) ~ dn018_,
+      mstat == 5 & mstat_changed == 0 & !is.na(dn018_carried) ~ dn018_carried,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  select(-source_dn018, -dn018_carried)
+
+```
+
+```{r}
+df_divlength %>%
+  mutate(dn018_missing = ifelse(is.na(dn018_new), "Missing", "Not Missing")) %>%
+  group_by(mstat, dn018_missing) %>%
+  count()
+
+df_divlength %>%
+  mutate(dn018_missing = ifelse(is.na(dn018_), "Missing", "Not Missing")) %>%
+  group_by(mstat, dn018_missing) %>%
+  count()
+```
+
+```{r}
+# Suskaičiuojama, prieš kiek laiko žmogus išsiskyrė
+df_divlength<- df_divlength %>%
+  mutate(
+    divlength = int_year - dn018_new
+  )
+```
+
+## Santuokos trukmė
+
+```{r}
+df_marrlength <- df_divlength
+```
+
+```{r}
+# Sujungiami santuokos metai į vieną kintamąjį, nes yra atskiri kintamieji registruotai partnerystei, santuoka kai gyvena atskirai ir kai gyvena kartu
+df_marrlength <- df_marrlength %>%
+  mutate(marr_year = coalesce(dn015_, dn016_, dn017_))
+```
+
+```{r}
+# Santuokos metai perkeliami iš ankstesnių bangų
+df_marrlength <- df_marrlength %>%
+  arrange(mergeid, wave) %>%
+  group_by(mergeid) %>%
+  mutate(
+    # Perkeliama bus tik tada, jeigu žmogus susituokęs, jeigu reikšmė yra ir jeigu vedybinis statusas pasikeitė
+    source_marr_year = ifelse(
+      mstat %in% c(1,2,3) & !is.na(marr_year) &
+        ((dn044_ == 1 & mn101_ == 1) | mn101_ == 0 | is.na(mn101_)),
+      marr_year,
+      NA_real_
+    ),
+
+    # Reikšmė perkeliama
+    marr_year_carried = na.locf(source_marr_year, na.rm = FALSE),
+
+    # Reikšmė bus paimta, jeigu žmogus vis dar išsiskyręs, vedybinsi statusas nepakito ir trūksta reikšmės
+    marr_year_new = case_when(
+      !is.na(marr_year) ~ marr_year,
+      mstat %in% c(1,2,3) & mstat_changed == 0 & !is.na(marr_year_carried) ~ marr_year_carried, 
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  select(-source_marr_year, -marr_year_carried)
+
+```
+
+```{r}
+# Kadangi į klausimą atsako tik vienas partneris, kitam partneriui reikia perkelti jo atsakymus
+partner_data <- df_marrlength %>%
+  select(mergeid, wave, marr_year_new) %>%
+  rename(mergeidp = mergeid, marr_year_new_partner = marr_year_new)
+
+
+df_marrlength <- df_marrlength %>%
+  left_join(partner_data, by = c("mergeidp", "wave")) %>%
+  mutate(
+    marr_year_newest = case_when(
+      !is.na(marr_year_new) ~ marr_year_new,  # keep own if present
+      is.na(marr_year_new) & !is.na(marr_year_new_partner) ~ marr_year_new_partner,  # take from partner
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  select(-marr_year_new_partner)  # clean up
+
+
+```
+
+```{r}
+# Suskaičiuojama santuokos trukmė
+df_marrlength<- df_marrlength %>%
+  mutate(
+    marrlength = int_year - marr_year_newest
+  )
+```
+
+## Vaikai
+
+```{r}
+df_childage <- df_marrlength
+```
+
+```{r}
+# Reikšmės ištrinamos, jeigu vaiko gimimo metai yra vėlesni nei interviu metai arba jeigu vaiko susilaukta anksčiau nei 12 metų (tokios reikšmės nelogiškos)
+df_childage <- df_childage %>%
+  mutate(across(
+      ch006_1:ch006_20,
+      ~ ifelse(. > int_year , NA, .)
+    )) %>%
+   mutate(across(
+      ch006_1:ch006_20,
+      ~ ifelse(. < int_year - age + 12 , NA, .)
+    ))
+```
+
+```{r}
+# Atrenkami tik jauniausio vaiko gimimo metai
+df_childage <- df_childage %>%
+  mutate(
+    youngest_child_year = pmax(
+      ch006_1, ch006_2, ch006_3, ch006_4, ch006_5,
+      ch006_6, ch006_7, ch006_8, ch006_9, ch006_10,
+      ch006_11, ch006_12, ch006_13, ch006_14, ch006_15,
+      ch006_16, ch006_17, ch006_18, ch006_19, ch006_20,
+      na.rm = TRUE
+    )
+  )
+```
+
+```{r}
+# Jauniauso vaiko amžius perkeliamas į sekančias bangas.
+df_childage <- df_childage %>%
+  arrange(mergeid, wave) %>%
+  group_by(mergeid) %>%
+  mutate(
+    youngest_child_year_new = case_when(
+      !is.na(youngest_child_year) ~ youngest_child_year,
+      TRUE ~ {
+        filled <- na.locf(youngest_child_year, na.rm = FALSE)
+        filled <- na.locf(filled, fromLast = TRUE, na.rm = FALSE)
+        filled
+      }
+    )
+  ) %>%
+  ungroup()
+
+
+```
+
+```{r}
+df_childage <- df_childage %>%
+  mutate(
+    mergeidp = if_else(mergeidp=="", NA, mergeidp)
+  )
+```
+
+```{r}
+# Jauniausio vaiko amžius perkeliamas partneriui
+partner_childage <- df_childage %>%
+  select(mergeid, wave, youngest_child_year_new) %>%
+  rename(mergeidp = mergeid, youngest_child_year_partner = youngest_child_year_new)
+
+df_childage <- df_childage %>%
+  left_join(partner_childage, by = c("mergeidp", "wave")) %>%
+  mutate(
+    youngest_child_year_newest = case_when(
+      !is.na(youngest_child_year_new) ~ youngest_child_year_new, 
+      is.na(youngest_child_year_new) & !is.na(youngest_child_year_partner) ~ youngest_child_year_partner, 
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  select(-youngest_child_year_partner)
+
+
+```
+
+```{r}
+# Reikšmės dar kartą perkeliamos į vėlesnes bangas, nes gautos naujos reikšmės iš partnerio.
+df_childage <- df_childage %>%
+  arrange(mergeid, wave) %>%
+  group_by(mergeid) %>%
+  mutate(
+    youngest_child_year_newest2= case_when(
+      !is.na(youngest_child_year_newest) ~ youngest_child_year_newest,
+      TRUE ~ {
+        filled <- na.locf(youngest_child_year_newest, na.rm = FALSE)
+        filled <- na.locf(filled, fromLast = TRUE, na.rm = FALSE)
+        filled
+      }
+    )
+  ) %>%
+  ungroup()
+```
+
+```{r}
+# Suskaičiuojamas jauniausio vaiko amžius
+df_childage<- df_childage %>%
+  mutate(
+    youngest_child_age = int_year - youngest_child_year_newest2
+  )
+```
+
+```{r}
+# Sukuriamas kintamasis ar žmogus turi vaikų.
+df_childage <- df_childage %>%
+  mutate(
+    has_children = case_when(
+      nchild == 0 ~ 0,
+      nchild > 0 ~ 1,
+    )
+  )
+```
+
+## Filtravimas 1
+
+```{r}
+df_filtered <- df_childage
+```
+
+```{r}
+# Išfiltruojami asmenys, jaunesni nei 50 m., bei esantys  7 bangoje (nes joje per daug trūkstamų reikšmių)
+df_filtered <- df_filtered %>%
+  filter(age >= 50 & wave != 7)
+```
+
+```{r}
+count1 <- df_filtered %>%
+  summarize(
+    unique_participants = n_distinct(mergeid),
+    observations = n()
+  )
+```
+
+```{r}
+# Nelogiškos reikšmės padaromos NA
+df_filtered <- df_filtered %>%
+  mutate(
+    divlength = ifelse(divlength + 12 >= age, NA, divlength),
+    divlength = ifelse(divlength < 0, NA, divlength),
+    marrlength = ifelse(marrlength + 12 >= age, NA, marrlength),
+    marrlength = ifelse(marrlength < 0, NA, marrlength),
+    youngest_child_age = ifelse(youngest_child_age + 12 >= age, NA, 
+                                youngest_child_age),
+    youngest_child_age = ifelse(youngest_child_age < 0, NA, 
+                                youngest_child_age)
+  )
+```
+
+```{r}
+# Jeigu žmogus neturi vaikų, vaiko amžius pažymimas -1
+df_filtered <- df_filtered %>%
+  mutate(
+    youngest_child_age = ifelse(has_children == 0, -1, youngest_child_age)
+  )
+```
+
+```{r}
+count2 <- df_filtered %>%
+  summarize(
+    unique_participants = n_distinct(mergeid),
+    observations = n()
+  )
+
+count1
+count2
+100 - (count2/count1)*100
+```
+
+## Skyrybos (ar (ne)išsiskyrę nuo praeitos bangos)
+
+```{r}
+df_divorced <- df_filtered
+```
+
+```{r}
+count1 <- df_divorced %>%
+  summarize(
+    unique_participants = n_distinct(mergeid),
+    observations = n()
+  )
+```
+
+```{r}
+# Bangos kintamasis paverčiamas intervaliniu, kad su juo būtų galima atlikti matematinius veiksmus.
+df_divorced <- df_divorced %>%
+  mutate(wave = as.numeric(wave))
+
+# Sukuriamas kintamasis divorced, kuris nurodo, kad žmogus išsiskyrė nuo praeitos bangos (1/2/3 -> 5) arba liko vedęs (1->1/2->2/3->3). 
+df_divorced <- df_divorced %>%
+  group_by(mergeid) %>%
+  arrange(wave) %>%
+  
+  # Sukuriami pagalbiniai kintamieji
+  mutate(
+      lag_mstat_ = lag(mstat, order_by = wave), # Nurodo buvusios apklausos vedybinį statusą
+      lag_wave = lag(wave, order_by = wave), # Nurodo buvusios apklausos bangą
+      wave_diff_lag = wave - lag_wave, # Nurodo, prieš kiek bangų buvo paskutinė apklausa
+  ) %>%
+  
+  # Sukuriamas kintamasis divorced
+  mutate(
+    divorced = case_when(
+      mstat == 5 & lag_mstat_ %in% c(1, 2, 3) & wave_diff_lag == 1 ~ 1, # Jei žmogus buvo 1/2/3 praeitoje apklausoje IR dabar yra 5 IR praeita apklausa buvo praeitoje bangoje (nes gali būti praeita apklausa prieš kelias bangas), tai 1 
+      mstat == 1 & lag_mstat_ == 1 & wave_diff_lag == 1 ~ 0, # Jei žmogus buvo praeitoje apklausoje 1 IR yra dabar 1 IR praeita apklausa buvo praeitoje bangoje, tai 0
+      mstat == 2 & lag_mstat_ == 2 & wave_diff_lag == 1 ~ 0, # Analogiška
+      mstat == 3 & lag_mstat_ == 3 & wave_diff_lag == 1 ~ 0, # Analogiška
+      TRUE ~ NA_real_ # Visais kitais atvejais - NA.
+      )
+  ) %>%
+  
+  # Divorced vertės perkeliamos ir į bangą prieš (pvz, jei 1 -> 5, tada bangoje, kai žmogus dar buvo 1, bus žinoma, kad jis tuoj išsiskirs)
+  mutate (
+  lead_divorced = lead(divorced, order_by = wave),
+  divorced = case_when(
+    lead_divorced == 1 ~ 1, # Jei sekančioje bangoje divorced = 1, tai ir šioje = 1
+    lead_divorced == 0 ~ 0, # Analogiškai
+    TRUE ~ divorced # Visais kitais atvejais išlieka divorced vertės
+    ) 
+  ) %>%
+  ungroup() %>%
+  arrange(mergeid, wave) %>%
+  select(-lag_mstat_, -lag_wave, -wave_diff_lag, -lead_divorced) # Ištrinami pagalbiniai kintamieji
+```
+
+### Eksperimentinė gr.
+
+```{r}
+# Sukuriame atskirą duomenų struktūrą tik eksperimentinėje grupėje esantiems (to reikės kontrolinei grupei sukurti - vėliau sujungsime atgal)
+experimental <- df_divorced %>%
+  filter(divorced == 1)
+```
+
+```{r}
+# Patikriname, ar teisingai paskaičiuotos divorced pagal vedybinio statuso trajektorijas: turi būti tik 1/2/3 -> 5
+experimental %>%
+     group_by(mergeid) %>%
+     arrange(wave) %>%
+     summarise(trajectory = paste(mstat, collapse = " -> "), .groups = "drop") %>%
+     count(trajectory, sort = TRUE)
+
+
+# Patikriname, kurios bangose dažniausiai įvykdavo skyrybos
+experimental %>%
+     group_by(mergeid) %>%
+     arrange(wave) %>%
+     summarise(trajectory = paste(wave, collapse = " -> "), .groups = "drop") %>%
+     count(trajectory, sort = TRUE)
+
+```
+
+### Kontrolinė gr.
+
+```{r}
+# Sukuriame atskirą duomenų struktūrą tik eksperimentinėje grupėje esantiems
+control <- df_divorced %>%
+    filter(divorced == 0)
+```
+
+```{r}
+# Patikriname vedybinio statuso trajektorijas kontrolinėje grupėje
+control %>%
+     group_by(mergeid) %>%
+     arrange(wave) %>%
+     summarise(trajectory = paste(mstat, collapse = " -> "), .groups = "drop") %>%
+     count(trajectory, sort = TRUE)
+```
+
+```{r}
+# Jei dalyvis yra eksperimentinėje grupėje, jis nėra analizuojamas kontrolinėje (pvz.: kai 1->1->5)
+control <- anti_join(control, experimental, by = "mergeid") 
+```
+
+```{r}
+# Patikriname vedybinio statuso trajektorijas kontrolinėje grupėje. 
+control %>%
+     group_by(mergeid) %>%
+     arrange(wave) %>%
+     summarise(trajectory = paste(mstat, collapse = " -> "), .groups = "drop") %>%
+     count(trajectory, sort = TRUE)
+```
+
+```{r}
+# Kadangi tie patys dalyviai galėjo išlikti santuokoje/partnerystėje ilgiau nei dvi bangas, reikia atsitiktinai atrinkti kiekvieno dalyvio dvi bangas, kad šias būtų galima lyginti su tose pačiose bangose išsiskyrusiaisias.
+set.seed(50) 
+
+control <- control %>%
+    group_by(mergeid) %>%
+    arrange(wave) %>%
+  
+    # Atsitiktinai atrenkame dvi bangas, kurios eina viena po kitos (1->2, 4-5, t.t.). Tai daroma iteratyviai - jei nepavyksta atrinkti šalia esančių bangų ARBA jei vedybinis statusas pakinta, tada atsitiktinai atrenkama per naujo
+    group_modify(~ { 
+        i <- 0
+        repeat {
+            start_index <- sample(1:(nrow(.x) - 1), 1)
+            selected <- slice(.x, c(start_index, start_index + 1))
+            
+
+            if ((abs(diff(selected$wave)) == 1) # Bangos šalia
+                & (selected$mstat[1] == selected$mstat[2])) # Vedybinis statusas išlieka vienodas
+              { 
+                break  
+            }
+            
+            # Jei per daugiau nei 100 kartų nepavyko atsitiktinai atrinkti pagal reikiamas sąlygas - pranešama
+            i <- i + 1
+            if (i >= 100) {  
+                cat("No valid pair found for MergeID:", .x$mergeid[1], "\n")
+                return(slice(.x, 1:2)) 
+            }
+        }
+        selected
+    }) %>%
+    ungroup()
+
+```
+
+```{r}
+# Patikriname vedybinio statuso trajektorijas: turi būti 1->1/2->2/3->3
+control %>%
+     group_by(mergeid) %>%
+     arrange(wave) %>%
+     summarise(trajectory = paste(mstat, collapse = " -> "), .groups = "drop") %>%
+     count(trajectory, sort = TRUE)
+
+# Patikriname bangų trajektorijas: turi būti tik viena po kitos einančios bangos ir tik po dvi
+control %>%
+     group_by(mergeid) %>%
+     arrange(wave) %>%
+     summarise(trajectory = paste(wave, collapse = " -> "), .groups = "drop") %>%
+     count(trajectory, sort = TRUE)
+```
+
+```{r}
+# Sujungiame kontrolinę ir eksperimentinę grupes į vieną duomenų struktūrą
+df_divorced <- bind_rows(experimental, control) %>%
+  arrange(mergeid, wave)
+```
+
+```{r}
+count2 <- df_divorced %>%
+  summarize(
+    unique_participants = n_distinct(mergeid),
+    observations = n()
+  )
+
+count1
+count2
+100 - (count2/count1)*100
+```
+
+## Matavimas (1/2)
+
+```{r}
+df_obs <- df_divorced
+```
+
+```{r}
+# Sukuriame matavimo kintamąjį, kuris nurodo dalyvio matavimą: 1 (prieš skyrybas) arba 2 (po skyrybų)
+df_obs <- df_obs %>%
+  group_by(mergeid) %>%
+  mutate(
+    observation = case_when(
+        row_number() == 1 ~ 1,
+        row_number() == n() ~ 2
+      )
+  ) %>% 
+  ungroup()
+```
+
+```{r}
+# Tikriname, ar teisingai suskaičiavome. Trajektorijos turėtų atitikti bangą ir matavimą (pvz.: 6->7 turi turėti bangas 6 ir 7, 6 bangos matavimas 1, o 7 bangos matavimas 2)
+df_obs %>%
+     group_by(mergeid) %>%
+     arrange(wave) %>%
+     summarise(observation = observation, wave = wave, divorced = divorced, trajectory = paste(wave, collapse = " -> "), .groups = "drop") %>%
+  count(divorced, trajectory, wave, observation, sort = TRUE)
+```
+
+```{r}
+df_obs$observation <- as.numeric(as.character(df_obs$observation))
+```
+
+## Lyginamos bangos
+
+```{r}
+df_wcomp <- df_obs
+```
+
+```{r}
+# Sukuriame kintamąjį, kuris nurodo, kurios bangos yra lyginamos.
+wcomp_list <- df_wcomp %>%
+    group_by(mergeid) %>%
+    arrange(wave) %>%
+    summarise(waves_compared = paste(wave, collapse = " -> "), .groups = "drop") %>%
+    ungroup()
+
+df_wcomp <- left_join(df_wcomp, wcomp_list, by = "mergeid")
+```
+
+```{r}
+# waves_compared turėtų atitikti wave ir observation kintamuosius (kaip ir anksčiau)
+df_wcomp %>%
+     group_by(mergeid) %>%
+     arrange(wave) %>%
+     summarise(observation = observation, wave = wave, divorced = divorced, waves_compared = waves_compared, .groups = "drop") %>%
+     count(divorced, waves_compared, wave, observation, sort = TRUE)
+    
+```
+
+```{r}
+df_final <- df_wcomp
+```
+
+## Filtravimas 2
+
+```{r}
+df_psm1 <- df_final
+```
+
+```{r}
+count1 <- df_psm1 %>%
+  group_by(divorced, observation) %>%
+  summarize(
+    observations = n()
+  )
+count1
+```
+
+```{r}
+# Jeigu nėra šių kintamųjų nėra abiejuose matavimai, jie išfiltruojami
+always_required_vars <- c("casp")
+
+# Jeigu šio kintamojo nėra pirmame matavime, jie išfiltruojami
+first_obs_only_vars <- c("gender", "age", "yedu", "cjs",
+                         "thinc_euro", "fdistress", "chronic",
+                         "gali","sphus", "phinact", "eurod", "esmoked",
+                         "youngest_child_age","has_children",
+                         "marrlength" )
+```
+
+```{r}
+# Tikriname, kiek tiriamųjų reiks išfiltruoti dėl kiekvieno kintamojo
+
+total_n <- df_psm1 %>% distinct(mergeid) %>% nrow()
+
+missings_first <- df_psm1 %>%
+  filter(observation == 1) %>%
+  group_by(mergeid) %>%
+  summarise(across(all_of(first_obs_only_vars), ~ is.na(.)), .groups = "drop") %>%
+  summarise(across(where(is.logical), ~ sum(.))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") %>%
+  mutate(
+    percent = round(100 * n_missing / total_n, 1),
+    group = "first_obs_only"
+  )
+
+
+missings_always <- df_psm1 %>%
+  group_by(mergeid) %>%
+  summarise(across(all_of(always_required_vars), ~ any(is.na(.))), .groups = "drop") %>%
+  summarise(across(where(is.logical), ~ sum(.))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") %>%
+  mutate(
+    percent = round(100 * n_missing / total_n, 1),
+    group = "always_required"
+  )
+
+missing_summary <- bind_rows(missings_always, missings_first) %>%
+  arrange(group, variable)
+
+print(missing_summary)
+
+```
+
+```{r}
+df_filtered_temp <- df_psm1
+
+# Stebime, kiek išfiltruoja dėl kiekvieno kintamojo
+filter_tracking <- tibble(
+  variable = "Start",
+  count_divorced_0 = sum(df_filtered_temp$divorced == 0, na.rm = TRUE)/2,
+  count_divorced_1 = sum(df_filtered_temp$divorced == 1, na.rm = TRUE)/2,
+  count_all = n_distinct(df_filtered_temp$mergeid)
+)
+
+# Išfiltruojami tiriamieji, kurie neturi abiejuose matavimuose minėtų kintamųjų
+for (var in always_required_vars) {
+  df_filtered_temp <- df_filtered_temp %>%
+    group_by(mergeid) %>%
+    filter(all(!is.na(.data[[var]]))) %>%
+    ungroup()
+
+  filter_tracking <- bind_rows(filter_tracking, tibble(
+    variable = var,
+    count_divorced_0 = sum(df_filtered_temp$divorced == 0, na.rm = TRUE)/2,
+    count_divorced_1 = sum(df_filtered_temp$divorced == 1, na.rm = TRUE)/2,
+    count_all = n_distinct(df_filtered_temp$mergeid)
+  ))
+}
+
+# Išfiltruojami tiriamieji, kurie neturi pirmame matavime minėtų kintamųjų
+for (var in first_obs_only_vars) {
+  df_filtered_temp <- df_filtered_temp %>%
+    group_by(mergeid) %>%
+    arrange(observation) %>%
+    filter(!is.na(first(.data[[var]]))) %>%
+    ungroup()
+
+  filter_tracking <- bind_rows(filter_tracking, tibble(
+    variable = paste0(var, "_firstObs"),
+    count_divorced_0 = sum(df_filtered_temp$divorced == 0, na.rm = TRUE)/2,
+    count_divorced_1 = sum(df_filtered_temp$divorced == 1, na.rm = TRUE)/2,
+    count_all = n_distinct(df_filtered_temp$mergeid)
+  ))
+}
+
+# Update df_filtered with the final filtered dataset
+df_psm1 <- df_filtered_temp
+
+# Print the tracking summary
+print(filter_tracking)
+
+```
+
+```{r}
+# Sukuriamas laiko iki skyrybų ir laiko po skyrybų kintamasis. Išfiltruojamos nelogiškos reikšmės.
+df_psm1_d1 <- df_psm1 %>%
+  filter(divorced == 1) %>%
+  group_by(mergeid) %>%
+  arrange(mergeid, observation) %>%
+  filter(divlength < 3 | observation == 1) %>%
+  mutate(
+    divlength = if_else(observation == 1, int_year - lead(dn018_new), divlength)
+  ) %>%
+  filter(all(divlength > -3)) %>%
+  filter(!is.na(divlength)) %>%
+  mutate(divlength_group = case_when(
+    divlength == -2 ~ "3-2",
+    divlength == -1 ~ "2-1",
+    divlength == 0 & observation == 1 ~ "1-0",
+    divlength == 0 & observation == 2 ~ "0-1",
+    divlength == 1 ~ "1-2",
+    divlength == 2 ~ "2-3",
+    TRUE ~ NA_character_  # fallback if missing
+  )) %>%
+  mutate(divlength_group = factor(divlength_group))
+
+df_psm1_d0<- df_psm1 %>%
+  filter(divorced == 0)
+
+df_psm1 <- bind_rows(df_psm1_d0, df_psm1_d1)
+
+df_psm1 %>%
+  group_by(divorced, observation, is.na(divlength)) %>%
+  count
+
+df_psm1 %>%
+  group_by(divorced, observation, divlength_group) %>%
+  count
+```
+
+```{r}
+count2 <- df_psm1 %>%
+  group_by(divorced, observation) %>%
+  summarize(
+    observations = n()
+  )
+
+count_combined <- left_join(count1, count2, by = c("divorced", "observation")) %>%
+  mutate(
+    difference = observations.x - observations.y,
+    percentage = difference/observations.x * 100
+  )
+
+count_combined
+
+count_combined %>%
+  group_by(observation) %>%
+  summarize(
+    observations_sum = sum(observations.x),
+    difference_sum = sum(difference),
+    percentage_sum = difference_sum / observations_sum * 100
+  )
+
+```
+
+```{r}
+df_psm1 %>%
+  group_by(divorced, observation) %>%
+  summarize(
+    n = n_distinct(mergeid),
+    prop_male = mean(gender == 1) * 100,
+    mean_age = mean(age),
+    sd_age = sd(age)
+  ) %>%
+  round(2)
+
+df_psm1 %>%
+  summarize(
+    n = n_distinct(mergeid),
+    divorced_n_prop = mean(divorced == 1) * 100,
+    ndivorced_n_prop = mean(divorced == 0) * 100,
+    prop_male = mean(gender == 1) * 100,
+    mean_age = mean(age),
+    sd_age = sd(age)
+  ) %>%
+  round(2)
+```
+
+```{r}
+df_psm1 %>%
+  group_by(divorced, observation) %>%
+  summarize(
+    n = n_distinct(mergeid),
+    prop_male = mean(gender == 1) * 100,
+    mean_age = mean(age),
+    sd_age = sd(age)
+  ) %>%
+  round(2)
+```
+
+# 1 užduotis
+
+## Panašiausiųjų atvejų analizė
+
+```{r}
+df_psm2 <- df_psm1
+```
+
+```{r}
+# Analizė atliekama tik su pirmaisiais matavimais (prieš skyrybas)
+df_psm2_obs1 <- df_psm2 %>%
+  filter(observation == 1)
+```
+
+```{r}
+# Tikriname tiesiškumo prielaidą
+df_psm2_obs1$age_logint <- df_psm2_obs1$age * log(df_psm2_obs1$age)
+df_psm2_obs1$isced_logint <- df_psm2_obs1$isced * log(df_psm2_obs1$isced)
+df_psm2_obs1$thinc_euro_logint <- df_psm2_obs1$thinc_euro * log(df_psm2_obs1$thinc_euro)
+df_psm2_obs1$fdistress_logint <- df_psm2_obs1$fdistress * log(df_psm2_obs1$fdistress)
+df_psm2_obs1$chronic_logint <- df_psm2_obs1$chronic * log(df_psm2_obs1$chronic)
+df_psm2_obs1$sphus_logint <- df_psm2_obs1$sphus * log(df_psm2_obs1$sphus)
+df_psm2_obs1$eurod_logint <- df_psm2_obs1$eurod * log(df_psm2_obs1$eurod)
+df_psm2_obs1$marrlength_logint <- df_psm2_obs1$marrlength * log(df_psm2_obs1$marrlength)
+
+psm_model_linearity <- glm(divorced ~ as.factor(gender) + age
+                        + isced + as.factor(cjs) + thinc_euro + 
+                          fdistress
+                         + chronic + as.factor(gali) + sphus + 
+                         as.factor(phinact) + 
+                         eurod + as.factor(esmoked) + youngest_child_age +
+                         as.factor(has_children) + marrlength  +
+                          age_logint + isced_logint +
+                        thinc_euro_logint  +
+                        fdistress_logint + chronic_logint +
+                        + sphus_logint + eurod_logint + marrlength_logint, 
+                      family = binomial(), data = df_psm2_obs1)
+
+summary(psm_model_linearity)
+```
+
+```{r}
+# Kadangi amžius ir skyrybų trukmė nesisiejo tiesiškai, jie paverčiami į kategorinius kintamuosius
+df_psm2$age_groups <- cut(df_psm2$age, breaks = c(50, 65, Inf),
+                    labels = c("50-64", "65+"),
+                    right = FALSE)
+
+df_psm2$marrlength_groups <- cut(df_psm2$marrlength, breaks = c(0, 10, 20, 30, 40, Inf),
+                    labels = c("0-9", "10-19", "20-29", 
+                               "30-39", "40+"),
+                    right = FALSE)
+
+
+df_psm2_obs1 <- df_psm2 %>%
+  filter(observation == 1)
+```
+
+```{r}
+# Vėl tikriname tiesiškuma po pakeitimų
+df_psm2_obs1$isced_logint <- df_psm2_obs1$isced * log(df_psm2_obs1$isced)
+df_psm2_obs1$thinc_euro_logint <- df_psm2_obs1$thinc_euro * log(df_psm2_obs1$thinc_euro)
+df_psm2_obs1$chronic_logint <- df_psm2_obs1$chronic * log(df_psm2_obs1$chronic)
+df_psm2_obs1$sphus_logint <- df_psm2_obs1$sphus * log(df_psm2_obs1$sphus)
+df_psm2_obs1$eurod_logint <- df_psm2_obs1$eurod * log(df_psm2_obs1$eurod)
+
+psm_model_linearity2 <-  glm(as.factor(divorced) ~ as.factor(gender) 
+                         + as.factor(age_groups)+
+                        + isced + as.factor(cjs) + thinc_euro + 
+                          fdistress
+                         + chronic + as.factor(gali) + sphus + 
+                         as.factor(phinact) + 
+                         eurod + as.factor(esmoked) + youngest_child_age +
+                         as.factor(has_children) + 
+                         as.factor(marrlength_groups) +
+                         isced_logint +
+                        thinc_euro_logint  +
+                        fdistress_logint + chronic_logint +
+                        + sphus_logint + eurod_logint, 
+                      family = binomial(), data = df_psm2_obs1)
+
+summary(psm_model_linearity2)
+```
+
+```{r}
+df_psm2_obs1$thinc_euro_new <- df_psm2_obs1$thinc_euro / 1000 / 12
+
+# Sukuriame logistinės regresijos modelį, prognozuojantį skyrybas
+psm_model_logit <- glm(as.factor(divorced) ~ as.factor(gender) 
+                         + as.factor(age_groups)+
+                        + isced + as.factor(cjs) + thinc_euro_new + 
+                          fdistress
+                         + chronic + as.factor(gali) + sphus + 
+                         as.factor(phinact) + 
+                         eurod + as.factor(esmoked) + youngest_child_age +
+                         as.factor(has_children) + 
+                         as.factor(marrlength_groups), 
+                      family = binomial(), data = df_psm2_obs1)
+
+summary(psm_model_logit)
+```
+
+```{r}
+# Paskaičiuojame Chi kvadratą, laisvės laipsnius ir p
+modelChi <- psm_model_logit$null.deviance - psm_model_logit$deviance
+modelChi
+
+chidf <- psm_model_logit$df.null - psm_model_logit$df.residual
+chidf
+
+chisq.prob <- 1 - pchisq(modelChi, chidf)
+chisq.prob
+```
+
+```{r}
+# Paskaičiuojame R kvadratą
+dev <- psm_model_logit$deviance
+nullDev <- psm_model_logit$null.deviance
+modelN <- length(psm_model_logit$fitted.values)
+R.l <- 1 - dev / nullDev
+R.cs <- 1- exp ( -(nullDev - dev) / modelN)
+R.n <- R.cs / ( 1 - ( exp (-(nullDev / modelN))))
+
+R.l
+R.cs
+R.n
+```
+
+```{r}
+library(car)
+
+# Tikriname multikolinearumą
+mean(vif(psm_model_logit))
+vif(psm_model_logit)
+1/vif(psm_model_logit)
+```
+
+```{r}
+data.frame(
+  odds_ratio = round(exp(coef(psm_model_logit)), 2)
+)
+```
+
+```{r}
+# Atliekame panašiausiųjų atvejų analizę
+
+library(Matching)
+library(doParallel) # Kadangi ilgai užtrunka, paraleliai naudojame kelis kompiuterio cores
+
+n_cores <- parallel::detectCores() - 1
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+
+# Surašome kintamuosius
+Tr <- df_psm2_obs1$divorced 
+X <- model.matrix(~ as.factor(gender) 
+                         + as.factor(age_groups)+
+                        + isced + as.factor(cjs) + thinc_euro + 
+                          fdistress
+                         + chronic + as.factor(gali) + sphus + 
+                         as.factor(phinact) + 
+                         eurod + as.factor(esmoked) + youngest_child_age +
+                         as.factor(has_children) + 
+                         as.factor(marrlength_groups), data = df_psm2_obs1)  
+
+# Suskaičiuojame svorius kiekvieno kintamojo
+genout <- GenMatch(
+  Tr = Tr,
+  X = X,
+  M = 1,
+  pop.size = 1000, 
+  max.generations = 50,
+  wait.generations = 2,
+  cluster = cl
+)
+
+stopCluster(cl)
+```
+
+```{r}
+# Atliekame genetinį poravimą
+matchout <- Match(Tr = Tr, X = X, Weight.matrix = genout, replace = FALSE)
+summary(matchout)
+
+# Sukuriamas duomenų rinkinys su atrinktais žmonėmis
+matched_ids <- unique(c(matchout$index.treated, matchout$index.control))
+df_psm2_model <- df_psm2_obs1[matched_ids, ]
+```
+
+```{r}
+# Tikriname balanso diagnostiką
+library(cobalt)
+
+bal_smd <- bal.tab(matchout, treat = Tr, covs = X, m.threshold = 0.1, un=TRUE, disp.levels = TRUE)
+bal_smd
+
+bal_vr <- bal.tab(matchout, treat = Tr, covs = X, v.threshold = 2, disp.levels = TRUE)
+bal_vr
+```
+
+```{r}
+# Sukuriame grafiką, rodantį standartinį vidurkių skirtumą (angl. standard mean difference) prieš poravimą ir po jo.
+p <- love.plot(
+  bal_smd,
+  var.names = c(
+    "(Intercept)" = "Sankirta",
+    "as.factor(gender)2" = "Lytis (Vyrai)",
+    "as.factor(age_groups)65+" = "Amžius (65+)",
+    "isced" = "Išsilavinimas",
+    "as.factor(cjs)2" = "Užimtumas (dirbantys)",
+    "as.factor(cjs)3" = "Užimtumas (bedarbiai)",
+    "as.factor(cjs)4" = "Užimtumas (turintys negalę)",
+    "as.factor(cjs)5" = "Užimtumas (namų šeimininkai)",
+    "thinc_euro" = "Namų ūkio pajamos",
+    "sphus" = "Subjektyvi sveikata",
+    "chronic" = "Lėtinės ligos",
+    "fdistress" = "Finansinis stresas",
+    "as.factor(gali)1" = "Veiksnumo ribotumas (turi)",
+    "as.factor(phinact)1" = "Fizinis aktyvumas (taip)",
+    "eurod" = "Depresyvumas",
+    "as.factor(esmoked)1" = "Rūkymas (taip)",
+    "youngest_child_age" = "Jauniausio vaiko amžius",
+    "as.factor(has_children)1" = "Vaikų turėjimas (taip)",
+    "as.factor(marrlength_groups)10-19" = "Santuokos trukmė (10-19)",
+    "as.factor(marrlength_groups)20-29" = "Santuokos trukmė (20-29)",
+    "as.factor(marrlength_groups)30-39" = "Santuokos trukmė (30-39)",
+    "as.factor(marrlength_groups)40+" = "Santuokos trukmė (40+)"
+    # add more as needed
+  ),
+  thresholds = c(m = 0.1), abs = TRUE,
+  return = "ggplot")
+
+
+p = p +
+    labs(
+    title = "Kontrolinių kintamųjų balansas prieš ir po poravimo",
+    x = "Absoliutūs standartizuoti vidurkių skirtumai",
+    y = NULL
+  ) +
+  scale_color_manual(
+    name = "",  # Legend title
+    labels = c("Prieš poravimą", "Po poravimo"),  # Legend values
+    values = c("Unadjusted" = "red", "Adjusted" = "cyan3")
+  ) +
+   theme_minimal(base_size = 10, base_family = "Helvetica") +
+  theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5, margin = margin(b = 10)),
+      axis.title.x = element_text(size = 10, margin = margin(t = 10)),
+      axis.text.x = element_text(size = 9),
+      axis.text.y = element_text(size = 9, margin = margin(r = 8)),
+      legend.title = element_text(size = 10),
+      legend.text = element_text(size = 9),
+      legend.position = "right",
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_line(color = "grey85"),
+      plot.margin = margin(t = 15, r = 20, b = 20, l = 20)
+    )
+    
+p
+ggsave("smd.svg", plot = p, width = 6.3, height = 4.5, units = "in", dpi = 300)
+```
+
+```{r}
+# Prijungiame antrą matavimą
+df_psm2_model_bothobs <- semi_join(df_psm2, df_psm2_model, by = "mergeid")
+
+df_psm2_model_bothobs %>%
+  group_by(divorced, observation) %>%
+  count()
+```
+
+```{r}
+df_psm3 <- df_psm2_model_bothobs %>%
+  mutate(
+    divorced = as.factor(divorced),
+    observation = as.factor(observation)
+  )
+```
+
+```{r}
+# Išsaugome gautą duomenų rinkinį.
+#saveRDS(df_psm3, file = "final_df.RData")
+df_psm3 <- readRDS("~/Desktop/Bakalauras/final_df.RData")
+```
+
+```{r}
+# Aprašomoji statistika
+df_psm3 %>%
+  group_by(as.integer(divorced), as.integer(observation)) %>%
+  summarize(
+    n = n_distinct(mergeid),
+    prop_male = mean(gender == 1) * 100,
+    mean_age = mean(age),
+    sd_age = sd(age)
+  ) %>%
+  round(2)
+
+df_psm3 %>%
+  summarize(
+    n = n_distinct(mergeid),
+    divorced_n_prop = mean(divorced == 1) * 100,
+    ndivorced_n_prop = mean(divorced == 0) * 100,
+    prop_male = mean(gender == 1) * 100,
+    mean_age = mean(age),
+    sd_age = sd(age)
+  ) %>%
+  round(2)
+```
+
+```{r}
+# Aprašomoji statistika
+df_psm3 %>%
+  summarize(
+    n = n_distinct(mergeid)
+  )
+
+df_psm3 %>%
+  filter(observation == 1) %>%
+  group_by(waves_compared) %>%
+  count() %>%
+  mutate(
+    n = n/434
+  )
+```
+
+```{r}
+# Sukuriama diagrama 1 užd.
+df_plot1 <- df_psm3 %>%
+  mutate(
+    gender = as.character(gender),
+    divorced = factor(divorced, levels = c(0, 1), labels = c("Likę santuokoje", "Išsiskyrę")),
+    observation = factor(observation, levels = c(1, 2), labels = c("Prieš skyrybas", "Po skyrybų"))
+  ) %>%
+  bind_rows(
+    df_psm3 %>%
+      mutate(
+        gender = "3",
+        divorced = factor(divorced, levels = c(0, 1), labels = c("Likę santuokoje", "Išsiskyrę")),
+        observation = factor(observation, levels = c(1, 2), labels = c("Prieš skyrybas", "Po skyrybų"))
+      )
+  ) %>%
+  mutate(
+    gender = factor(gender, levels = c("1", "2", "3"), labels = c("Vyrai", "Moterys", "Visi"))
+  )
+
+plot1 <- ggplot(df_plot1, aes(x = gender, y = casp, fill = divorced)) +
+  stat_summary(fun = mean, geom = "bar",
+               position = position_dodge(width = 0.8),
+               width = 0.6, color = "black") +
+  stat_summary(fun.data = mean_se, geom = "errorbar",
+               position = position_dodge(width = 0.8),
+               width = 0.2) +
+  facet_wrap(~observation) +
+  scale_fill_manual(
+    name = "Skyrybų statusas",
+    values = c("Likę santuokoje" = "#80dfff", "Išsiskyrę" = "#ff9999")
+  ) +
+  labs(
+    title = "Psichologinės gerovės skirtumai tarp \n išsiskyrusiųjų ir likusių santuokoje",
+    x = NULL,
+    y = "CASP-12",
+    fill = "Skyrybų statusas"
+  ) +
+  theme_minimal(base_size = 10, base_family = "Helvetica") +
+  #scale_y_continuous(limits = c(12, 48)) + 
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5, margin = margin(b = 10)),
+    axis.text = element_text(size = 10),
+    strip.text = element_text(size = 10),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    plot.margin = margin(t = 20, r = 15, b = 15, l = 15),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    legend.position = "bottom"
+  ) +
+  coord_cartesian(ylim = c(12, 48)) +
+  scale_y_continuous(
+    breaks = c(12, 20, 30, 40, 48),
+    expand = c(0, 0)
+  )
+
+plot1
+
+ggsave("plot1.png", plot = plot1, width = 6.3, height = 4.5, units = "in", dpi = 300)
+```
+
+## Išsiskyrę ir neišsiskyrę prieš skyrybas
+
+```{r}
+df_psm3_obs1 <- df_psm3 %>%
+  filter(observation == 1)
+```
+
+```{r}
+# Aprašomoji statistika
+library(pastecs)
+
+df_psm3_obs1 %>%
+  group_split(divorced, gender) %>%
+  lapply(function(group_data) {
+    group_id <- paste("divorced =", unique(group_data$divorced),
+                      ", gender =", unique(group_data$gender))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+
+```
+
+```{r}
+# Tikriname normalumą
+df_psm3_obs1 %>%
+  group_split(divorced) %>%
+  lapply(function(group_data) {
+    group_id <- paste("divorced =", unique(group_data$divorced))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+
+df_psm3_obs1 %>%
+  group_split(gender) %>%
+  lapply(function(group_data) {
+    group_id <- paste("gender =", unique(group_data$gender))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+# Tikriname normalumą
+ggplot(df_psm3_obs1, aes(x = casp)) +
+  geom_histogram(bins = 10) +
+  facet_grid(gender ~ divorced) 
+
+ggplot(df_psm3_obs1, aes(sample = casp)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_grid(gender ~ divorced)
+```
+
+```{r}
+# Tikriname dispersijos homogeniškumą
+library(car)
+leveneTest(df_psm3_obs1$casp, interaction(df_psm3_obs1$divorced,
+df_psm3_obs1$gender), center = median)
+
+```
+
+```{r}
+# Sukuriame kontrastus
+df_psm3_obs1$divorced <- factor(df_psm3_obs1$divorced)
+df_psm3_obs1$gender <- factor(df_psm3_obs1$gender)
+contrasts(df_psm3_obs1$divorced) <- contr.sum(2)
+contrasts(df_psm3_obs1$gender)   <- contr.sum(2)
+```
+
+```{r}
+# Atliekame faktorinę ANOVA
+anova1 <-aov(casp ~ divorced*gender, data = df_psm3_obs1)
+anova1_type3 <- Anova(anova1,type = "III")
+anova1_type3
+```
+
+```{r}
+# Paskaičiuojame efekto dydį
+library(effectsize)
+omega_squared(anova1_type3)
+```
+
+## Išsiskyrę ir neišsiskyrę po skyrybų
+
+```{r}
+df_psm3_obs2 <- df_psm3 %>%
+  filter(observation == 2)
+```
+
+```{r}
+# Aprašomoji statistika
+df_psm3_obs2 %>%
+  group_split(divorced, gender) %>%
+  lapply(function(group_data) {
+    group_id <- paste("divorced =", unique(group_data$divorced),
+                      ", gender =", unique(group_data$gender))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+# Tikriname normalumą
+df_psm3_obs2 %>%
+  group_split(divorced) %>%
+  lapply(function(group_data) {
+    group_id <- paste("divorced =", unique(group_data$divorced))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+
+df_psm3_obs2 %>%
+  group_split(gender) %>%
+  lapply(function(group_data) {
+    group_id <- paste("gender =", unique(group_data$gender))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+# Tikriname normalumą
+ggplot(df_psm3_obs2, aes(x = casp)) +
+  geom_histogram(bins = 10) +
+  facet_grid(gender ~ divorced) 
+
+ggplot(df_psm3_obs2, aes(sample = casp)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_grid(gender ~ divorced)
+```
+
+```{r}
+# Tikriname dispersijos homogeniškumą
+leveneTest(df_psm3_obs2$casp, interaction(df_psm3_obs2$divorced,
+df_psm3_obs2$gender), center = median)
+```
+
+```{r}
+# Sukuriame kontrastus
+df_psm3_obs2$divorced <- factor(df_psm3_obs2$divorced)
+df_psm3_obs2$gender <- factor(df_psm3_obs2$gender)
+contrasts(df_psm3_obs2$divorced) <- contr.sum(2)
+contrasts(df_psm3_obs2$gender)   <- contr.sum(2)
+```
+
+```{r}
+# Atliekame ANOVA. Atsižvelgiame, kad dispersijos nėra homogeniškos.
+anova2 <-aov(casp ~ divorced*gender, data = df_psm3_obs2)
+anova2_type3 <- Anova(anova2,type = "III", white.adjust = TRUE)
+anova2_type3
+```
+
+```{r}
+# Apskaičiuojame efekto dydį
+omega_squared(anova2_type3)
+```
+
+# 2 užduotis
+
+## Neišsiskyrę prieš ir po skyrybų
+
+```{r}
+# Sukuriame diagramą 2 užd
+plot2 <- ggplot(df_psm3, aes(x = as.factor(observation), y = casp, 
+                                  color = as.factor(divorced), 
+                             group = as.factor(divorced))) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(fun = mean, geom = "point", size = 2) +
+  labs(
+    title = "Psichologinės gerovės pokytis išsiskyrusiųjų\n ir likusių santuokoje grupėse",
+    x = NULL,
+    y = "CASP-12",
+    color = "Skyrybų statusas"
+  ) +
+  scale_color_manual(
+    labels = c("0" = "Liko santuokoje", "1" = "Išsiskyrė"),
+    values = c("0" = "#80dfff", "1" = "#ff8080")
+  ) +
+  scale_x_discrete(labels = c("1" = "Prieš skyrybas", "2" = "Po skyrybų")) +
+  theme_minimal(base_size = 10, base_family = "Helvetica") +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5, margin = margin(b = 10)),
+    axis.text = element_text(size = 10),
+    strip.text = element_text(size = 10),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    plot.margin = margin(t = 20, r = 15, b = 15, l = 15),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    legend.position = "bottom"
+  ) + 
+  scale_y_continuous(limits = c(12, 48), breaks = c(12, 20, 30, 40, 48))
+
+plot2
+ggsave("plot2.svg", plot = plot2, width = 6.3, height = 4.5, units = "in", dpi = 300)
+```
+
+```{r}
+df_psm3_div0 <- df_psm3 %>%
+  filter(divorced == 0)
+```
+
+```{r}
+# Tikriname normalumą
+ggplot(df_psm3_div0, aes(x = casp)) +
+  geom_histogram(bins = 10) +
+  facet_wrap(~observation)
+
+ggplot(df_psm3_div0, aes(sample = casp)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_wrap(~observation)
+```
+
+```{r}
+# Tikriname normalumą
+df_psm3_div0 %>%
+  group_split(observation) %>%
+  lapply(function(group_data) {
+    group_id <- unique(group_data$observation)
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 3)))
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+# Atliekame porinį t-testą
+before <- df_psm3_div0 %>% filter(observation == 1) %>% pull(casp)
+after <-  df_psm3_div0 %>% filter(observation == 2) %>% pull(casp)
+
+ttest1 <-t.test(before, after, paired = TRUE)
+ttest1
+```
+
+```{r}
+# Suskaičiuojame efekto dydį
+cohensd_3 <- cohens_d(before, after, paired = TRUE)
+cohensd_3
+```
+
+## Išsiskyrę prieš ir po skyrybų
+
+```{r}
+df_psm3_div1 <- df_psm3 %>%
+  filter(divorced == 1)
+```
+
+```{r}
+# Patikriname normalumą
+ggplot(df_psm3_div1, aes(x = casp)) +
+  geom_histogram(bins = 10) +
+  facet_wrap(~observation)
+
+ggplot(df_psm3_div1, aes(sample = casp)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_wrap(~observation)
+```
+
+```{r}
+# Tikriname normalumą
+df_psm3_div1 %>%
+  group_split(observation) %>%
+  lapply(function(group_data) {
+    group_id <- unique(group_data$observation)
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 3)))
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+# Atliekame porinį t-testą
+before <- df_psm3_div1 %>% filter(observation == 1) %>% pull(casp)
+after <-  df_psm3_div1 %>% filter(observation == 2) %>% pull(casp)
+
+ttest2 <-t.test(before, after, paired = TRUE)
+ttest2
+```
+
+```{r}
+# Skaičiuojame efekto dydį
+cohensd_2 <- cohens_d(before, after, paired = TRUE)
+cohensd_2
+```
+
+# 3 užduotis
+
+```{r}
+df_anova <- df_psm1 %>%
+  filter(divorced == 1)
+```
+
+```{r}
+# Nurodome kintamojo reikšmių tvarką
+df_anova <- df_anova %>%
+  mutate(divlength_group = factor(
+    divlength_group,
+    levels = c(
+      "3-2",
+      "2-1",
+      "1-0",
+      "0-1",
+      "1-2",
+      "2-3"
+    ),
+    ordered = TRUE
+  ))
+```
+
+```{r}
+df_anova <- df_anova %>%
+  mutate(divlength_code = case_when(
+    divlength_group == "3-2" ~ -3,
+    divlength_group == "2-1" ~ -2,
+    divlength_group == "1-0" ~ -1,
+    divlength_group == "0-1" ~ 1,
+    divlength_group == "1-2" ~ 2,
+    divlength_group == "2-3" ~ 3,
+    TRUE ~ NA_real_
+  ))
+```
+
+```{r}
+df_anova %>%
+  group_by(divlength_group, gender) %>%
+  count
+```
+
+```{r}
+df_anova1 <- df_anova %>% 
+  filter(divlength_group %in% c("3-2", "2-1", "1-0"))
+```
+
+```{r}
+# Sukuriame diagramą 3 užd
+
+df_plot5 <- df_anova %>%
+  mutate(gender = as.character(gender)) %>%
+  bind_rows(
+    df_anova %>%
+      mutate(gender = "3")
+  ) %>%
+  mutate(
+    gender = factor(gender, levels = c("1", "2", "3"), labels = c("Vyrai", "Moterys", "Visi")),
+    observation = factor(observation, levels = c(1, 2), labels = c("Laikas iki skyrybų", "Laikas po skyrybų")),
+    divlength_group = factor(divlength_group, levels = c("3-2", "2-1", "1-0", "0-1", "1-2", "2-3"), labels = c("3-2 m.", "2-1 m.", "1-0 m.", "0-1 m.", "1-2 m.", "2-3 m."))
+  )
+
+plot5 <- ggplot(df_plot5, aes(x = divlength_group, y = casp, color = gender, group = gender)) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  facet_grid(. ~ observation, scales = "free_x") +
+  scale_color_manual(
+    values = c("Vyrai" = "#ff8080", "Moterys" = "#80dfff", "Visi" = "gray40")
+  ) +
+  labs(
+    title = "Psichologinės gerovės skirtumai priklausomai \nnuo laiko iki skyrybų ir laiko po skyrybų",
+    x = NULL,
+    y = "CASP-12",
+    color = "Lytis"
+  ) +
+  theme_minimal(base_size = 10, base_family = "Helvetica") +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 10),
+    strip.text = element_text(size = 10),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    plot.margin = margin(t = 20, r = 15, b = 15, l = 15),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    legend.position = "bottom",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank()
+  ) +
+  scale_y_continuous(limits = c(12, 48), 
+                     breaks = c(12, 20, 30, 40, 48)) +
+  coord_cartesian(ylim = c(12, 48))
+
+plot5
+ggsave("plot5.png", plot = plot5, width = 6.3, height = 4.5, units = "in", dpi = 300)
+```
+
+```{r}
+# Tikriname normalumą
+df_anova1 %>%
+  group_split(divlength_group, gender) %>%
+  lapply(function(group_data) {
+    group_id <- paste("divlength =", unique(group_data$divlength_group),
+                      ", gender =", unique(group_data$gender))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+# Tikriname normalumą
+df_anova1 %>%
+  group_split(divlength_group) %>%
+  lapply(function(group_data) {
+    group_id <- paste("divlength =", unique(group_data$divlength_group))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+
+df_anova1 %>%
+  group_split(gender) %>%
+  lapply(function(group_data) {
+    group_id <- paste("gender =", unique(group_data$gender))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+# Tikriname normalumą
+ggplot(df_anova1, aes(x = casp)) +
+  geom_histogram(bins = 10) +
+  facet_grid(gender ~ divlength_group) 
+
+ggplot(df_anova1, aes(sample = casp)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_grid(gender ~ divlength_group)
+```
+
+```{r}
+# Aprašomoji statistika
+df_anova1 %>%
+  group_by(divlength_group,7) %>%
+  summarise(n = n()) %>%
+  mutate(proportion = n / sum(n))
+```
+
+```{r}
+# Tikriname dispersijos homogeniškumą
+leveneTest(df_anova1$casp, interaction(df_anova1$divlength_group,
+df_anova1$gender), center = median)
+```
+
+```{r}
+# Sukuriame kontrastus
+df_anova1$divlength_group <- factor(df_anova1$divlength_group)
+df_anova1$gender <- factor(df_anova1$gender)
+contrasts(df_anova1$divlength_group) <- contr.poly(3)
+contrasts(df_anova1$gender)   <- contr.sum(2)
+
+```
+
+```{r}
+# Skačiuojame faktorinę ANOVA
+anova2_1 <-aov(casp ~ divlength_group*gender, data = df_anova1)
+anova2_1_type3 <- Anova(anova2_1,type = "III")
+anova2_1_type3
+```
+
+```{r}
+summary.lm(anova2_1)
+```
+
+```{r}
+# Skaičiuojame efekto dydį
+omega_squared(anova2_1_type3)
+```
+
+```{r}
+df_anova2 <- df_anova %>% 
+  filter(divlength_group %in% c("0-1", "1-2", "2-3"))
+```
+
+```{r}
+# Aprašomoji statistika
+df_anova2 %>%
+  group_by(divlength_group) %>%
+  summarise(n = n()) %>%
+  mutate(proportion = n / sum(n))
+```
+
+```{r}
+# Tikriname normalumą
+df_anova2 %>%
+  group_split(divlength_group, gender) %>%
+  lapply(function(group_data) {
+    group_id <- paste("divlength =", unique(group_data$divlength_group),
+                      ", gender =", unique(group_data$gender))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+# Tikriname normalumą
+df_anova2 %>%
+  group_split(divlength_group) %>%
+  lapply(function(group_data) {
+    group_id <- paste("divlength =", unique(group_data$divlength_group))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+
+df_anova2 %>%
+  group_split(gender) %>%
+  lapply(function(group_data) {
+    group_id <- paste("gender =", unique(group_data$gender))
+    desc <- stat.desc(group_data$casp, basic = FALSE, norm = TRUE)
+    data.frame(group = group_id, t(round(desc, 2)))
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+# Tikriname normalumą
+ggplot(df_anova2, aes(x = casp)) +
+  geom_histogram(bins = 10) +
+  facet_grid(gender ~ divlength_group) 
+
+ggplot(df_anova2, aes(sample = casp)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_grid(gender ~ divlength_group)
+```
+
+```{r}
+# Skaičiuojame dispersijos homogeniškumą
+leveneTest(df_anova2$casp, interaction(df_anova2$divlength_group,
+df_anova2$gender), center = median)
+```
+
+```{r}
+# Skaičiuojame kontrastus
+df_anova2$divlength_group <- factor(df_anova2$divlength_group)
+df_anova2$gender <- factor(df_anova2$gender)
+contrasts(df_anova2$divlength_group) <- contr.poly(3)
+contrasts(df_anova2$gender)   <- contr.sum(2)
+```
+
+```{r}
+# Atliekame faktorinę ANOVA
+anova2_2 <-aov(casp ~ divlength_group*gender, data = df_anova2)
+anova2_2_type3 <- Anova(anova2_2,type = "III")
+anova2_2_type3
+```
+
+```{r}
+summary.lm(anova2_2)
+```
+
+```{r}
+# Skaičiuojame efekto dydį
+omega_squared(anova2_2_type3)
+```

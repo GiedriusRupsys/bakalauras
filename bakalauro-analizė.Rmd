@@ -975,10 +975,8 @@ for (var in first_obs_only_vars) {
   ))
 }
 
-# Update df_filtered with the final filtered dataset
 df_psm1 <- df_filtered_temp
 
-# Print the tracking summary
 print(filter_tracking)
 
 ```
@@ -1002,7 +1000,7 @@ df_psm1_d1 <- df_psm1 %>%
     divlength == 0 & observation == 2 ~ "0-1",
     divlength == 1 ~ "1-2",
     divlength == 2 ~ "2-3",
-    TRUE ~ NA_character_  # fallback if missing
+    TRUE ~ NA_character_ 
   )) %>%
   mutate(divlength_group = factor(divlength_group))
 
@@ -1156,7 +1154,7 @@ psm_model_linearity2 <-  glm(as.factor(divorced) ~ as.factor(gender)
                          as.factor(marrlength_groups) +
                          isced_logint +
                         thinc_euro_logint  +
-                        fdistress_logint + chronic_logint +
+                        chronic_logint +
                         + sphus_logint + eurod_logint, 
                       family = binomial(), data = df_psm2_obs1)
 
@@ -1226,7 +1224,7 @@ data.frame(
 # Atliekame panašiausiųjų atvejų analizę
 
 library(Matching)
-library(doParallel) # Kadangi ilgai užtrunka, paraleliai naudojame kelis kompiuterio cores
+library(doParallel)
 
 n_cores <- parallel::detectCores() - 1
 cl <- makeCluster(n_cores)
@@ -1306,7 +1304,6 @@ p <- love.plot(
     "as.factor(marrlength_groups)20-29" = "Santuokos trukmė (20-29)",
     "as.factor(marrlength_groups)30-39" = "Santuokos trukmė (30-39)",
     "as.factor(marrlength_groups)40+" = "Santuokos trukmė (40+)"
-    # add more as needed
   ),
   thresholds = c(m = 0.1), abs = TRUE,
   return = "ggplot")
@@ -1314,16 +1311,16 @@ p <- love.plot(
 
 p = p +
     labs(
-    title = "Kontrolinių kintamųjų balansas prieš ir po poravimo",
+    title = NULL,
     x = "Absoliutūs standartizuoti vidurkių skirtumai",
-    y = NULL
+    y = "Kontroliuoti šalutiniai kintamieji"
   ) +
   scale_color_manual(
-    name = "",  # Legend title
-    labels = c("Prieš poravimą", "Po poravimo"),  # Legend values
+    name = "", 
+    labels = c("Prieš", "Po"),
     values = c("Unadjusted" = "red", "Adjusted" = "cyan3")
   ) +
-   theme_minimal(base_size = 10, base_family = "Helvetica") +
+   theme_minimal(base_size = 10, base_family = "Times New Roman") +
   theme(
       plot.title = element_text(size = 14, face = "bold", hjust = 0.5, margin = margin(b = 10)),
       axis.title.x = element_text(size = 10, margin = margin(t = 10)),
@@ -1340,6 +1337,10 @@ p = p +
     
 p
 ggsave("smd.svg", plot = p, width = 6.3, height = 4.5, units = "in", dpi = 300)
+```
+
+```{r}
+p + theme_minimal(base_family = "Quicksand")
 ```
 
 ```{r}
@@ -1371,7 +1372,10 @@ df_psm3 %>%
   group_by(as.integer(divorced), as.integer(observation)) %>%
   summarize(
     n = n_distinct(mergeid),
+    count_male = sum(gender == 1),
     prop_male = mean(gender == 1) * 100,
+    count_female = sum(gender == 2),
+    prop_female = mean(gender == 2) * 100,
     mean_age = mean(age),
     sd_age = sd(age)
   ) %>%
@@ -1382,8 +1386,10 @@ df_psm3 %>%
     n = n_distinct(mergeid),
     divorced_n_prop = mean(divorced == 1) * 100,
     ndivorced_n_prop = mean(divorced == 0) * 100,
+    count_male = sum(gender == 1),
     prop_male = mean(gender == 1) * 100,
-    mean_age = mean(age),
+    count_female = sum(gender == 2),
+    prop_female = mean(gender == 2) * 100,
     sd_age = sd(age)
   ) %>%
   round(2)
@@ -1401,8 +1407,19 @@ df_psm3 %>%
   group_by(waves_compared) %>%
   count() %>%
   mutate(
-    n = n/434
+    n_prop = n/434
   )
+```
+
+```{r}
+df_sexuality <- df_psm3 %>%
+  filter(observation == 1) %>%
+  mutate(
+    partner_gender = df_long$gender[match(mergeidp, df_long$mergeid)]
+  )
+
+df_sexuality %>% group_by(is.na(partner_gender), is.na(mergeidp)) %>% count()
+df_sexuality %>% group_by(gender == partner_gender) %>% count()
 ```
 
 ```{r}
@@ -1411,14 +1428,14 @@ df_plot1 <- df_psm3 %>%
   mutate(
     gender = as.character(gender),
     divorced = factor(divorced, levels = c(0, 1), labels = c("Likę santuokoje", "Išsiskyrę")),
-    observation = factor(observation, levels = c(1, 2), labels = c("Prieš skyrybas", "Po skyrybų"))
+    observation = factor(observation, levels = c(1, 2), labels = c("Pirmas matavimas", "Antras matavimas"))
   ) %>%
   bind_rows(
     df_psm3 %>%
       mutate(
         gender = "3",
         divorced = factor(divorced, levels = c(0, 1), labels = c("Likę santuokoje", "Išsiskyrę")),
-        observation = factor(observation, levels = c(1, 2), labels = c("Prieš skyrybas", "Po skyrybų"))
+        observation = factor(observation, levels = c(1, 2), labels = c("Pirmas matavimas", "Antras matavimas"))
       )
   ) %>%
   mutate(
@@ -1438,19 +1455,18 @@ plot1 <- ggplot(df_plot1, aes(x = gender, y = casp, fill = divorced)) +
     values = c("Likę santuokoje" = "#80dfff", "Išsiskyrę" = "#ff9999")
   ) +
   labs(
-    title = "Psichologinės gerovės skirtumai tarp \n išsiskyrusiųjų ir likusių santuokoje",
+    title = NULL,
     x = NULL,
-    y = "CASP-12",
+    y = "CASP-12 balai",
     fill = "Skyrybų statusas"
   ) +
-  theme_minimal(base_size = 10, base_family = "Helvetica") +
+  theme_minimal(base_size = 12, base_family = "Times New Roman") +
   #scale_y_continuous(limits = c(12, 48)) + 
   theme(
-    plot.title = element_text(size = 14, face = "bold", hjust = 0.5, margin = margin(b = 10)),
-    axis.text = element_text(size = 10),
-    strip.text = element_text(size = 10),
-    legend.title = element_text(size = 11),
-    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 11),
+    strip.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11),
     plot.margin = margin(t = 20, r = 15, b = 15, l = 15),
     axis.title.x = element_text(margin = margin(t = 10)),
     axis.title.y = element_text(margin = margin(r = 10)),
@@ -1630,7 +1646,8 @@ anova2_type3
 
 ```{r}
 # Apskaičiuojame efekto dydį
-omega_squared(anova2_type3)
+library(effectsize)
+omega_squared(anova2)
 ```
 
 # 2 užduotis
@@ -1638,41 +1655,47 @@ omega_squared(anova2_type3)
 ## Neišsiskyrę prieš ir po skyrybų
 
 ```{r}
-# Sukuriame diagramą 2 užd
-plot2 <- ggplot(df_psm3, aes(x = as.factor(observation), y = casp, 
-                                  color = as.factor(divorced), 
-                             group = as.factor(divorced))) +
-  stat_summary(fun = mean, geom = "line", size = 1) +
-  stat_summary(fun = mean, geom = "point", size = 2) +
+df_plot2 <- df_psm3 %>%
+  mutate(
+    divorced = factor(divorced, levels = c(0, 1), labels = c("Likę santuokoje", "Išsiskyrę")),
+    observation = factor(observation, levels = c(1, 2)) 
+  )
+
+plot2_bar <- ggplot(df_plot2, aes(x = divorced, y = casp, fill = observation)) +
+  stat_summary(fun = mean, geom = "bar",
+               position = position_dodge(width = 0.8),
+               width = 0.6, color = "black") +
   labs(
-    title = "Psichologinės gerovės pokytis išsiskyrusiųjų\n ir likusių santuokoje grupėse",
-    x = NULL,
-    y = "CASP-12",
-    color = "Skyrybų statusas"
+    x = "Skyrybų statusas",
+    y = "CASP-12 balai",
+    fill = "Matavimo laikas"
   ) +
-  scale_color_manual(
-    labels = c("0" = "Liko santuokoje", "1" = "Išsiskyrė"),
-    values = c("0" = "#80dfff", "1" = "#ff8080")
+  scale_fill_manual(
+    values = c("1" = "#80dfff", "2" = "#ff9999"),
+    labels = c("1" = "Pirmas matavimas", "2" = "Antras matavimas")
   ) +
-  scale_x_discrete(labels = c("1" = "Prieš skyrybas", "2" = "Po skyrybų")) +
-  theme_minimal(base_size = 10, base_family = "Helvetica") +
+  theme_minimal(base_size = 12, base_family = "Times New Roman") +
+  coord_cartesian(ylim = c(12, 50)) +
+  scale_y_continuous(
+    breaks = c(12, 20, 30, 40, 48),
+    expand = c(0, 0)
+  ) +
   theme(
-    plot.title = element_text(size = 14, face = "bold", hjust = 0.5, margin = margin(b = 10)),
-    axis.text = element_text(size = 10),
-    strip.text = element_text(size = 10),
-    legend.title = element_text(size = 11),
-    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 11),
+    strip.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11),
     plot.margin = margin(t = 20, r = 15, b = 15, l = 15),
     axis.title.x = element_text(margin = margin(t = 10)),
     axis.title.y = element_text(margin = margin(r = 10)),
     panel.grid.major.x = element_blank(),
     panel.grid.minor.x = element_blank(),
     legend.position = "bottom"
-  ) + 
-  scale_y_continuous(limits = c(12, 48), breaks = c(12, 20, 30, 40, 48))
+  )
 
-plot2
-ggsave("plot2.svg", plot = plot2, width = 6.3, height = 4.5, units = "in", dpi = 300)
+plot2_bar
+
+ggsave("plot2_bar.png", plot = plot2_bar, width = 6.3, height = 4.5, units = "in", dpi = 300)
 ```
 
 ```{r}
@@ -1825,7 +1848,9 @@ df_plot5 <- df_anova %>%
   mutate(
     gender = factor(gender, levels = c("1", "2", "3"), labels = c("Vyrai", "Moterys", "Visi")),
     observation = factor(observation, levels = c(1, 2), labels = c("Laikas iki skyrybų", "Laikas po skyrybų")),
-    divlength_group = factor(divlength_group, levels = c("3-2", "2-1", "1-0", "0-1", "1-2", "2-3"), labels = c("3-2 m.", "2-1 m.", "1-0 m.", "0-1 m.", "1-2 m.", "2-3 m."))
+    divlength_group = factor(divlength_group, 
+                             levels = c("3-2", "2-1", "1-0", "0-1", "1-2", "2-3"), 
+                             labels = c("Tretieji\nmetai", "Antrieji\nmetai", "Pirmieji\nmetai", "Pirmieji\n metai ", "Antrieji\n metai ", "Tretieji\n metai "))
   )
 
 plot5 <- ggplot(df_plot5, aes(x = divlength_group, y = casp, color = gender, group = gender)) +
@@ -1835,24 +1860,22 @@ plot5 <- ggplot(df_plot5, aes(x = divlength_group, y = casp, color = gender, gro
     values = c("Vyrai" = "#ff8080", "Moterys" = "#80dfff", "Visi" = "gray40")
   ) +
   labs(
-    title = "Psichologinės gerovės skirtumai priklausomai \nnuo laiko iki skyrybų ir laiko po skyrybų",
     x = NULL,
-    y = "CASP-12",
+    y = "CASP-12 balai",
     color = "Lytis"
   ) +
-  theme_minimal(base_size = 10, base_family = "Helvetica") +
+  theme_minimal(base_size = 10, base_family = "Times New Roman") +
   theme(
-    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-    axis.text = element_text(size = 10),
-    strip.text = element_text(size = 10),
-    legend.title = element_text(size = 11),
-    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 11),
+    strip.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11),
     plot.margin = margin(t = 20, r = 15, b = 15, l = 15),
     axis.title.x = element_text(margin = margin(t = 10)),
     axis.title.y = element_text(margin = margin(r = 10)),
-    legend.position = "bottom",
     panel.grid.major.x = element_blank(),
-    panel.grid.minor.x = element_blank()
+    panel.grid.minor.x = element_blank(),
+    legend.position = "bottom"
   ) +
   scale_y_continuous(limits = c(12, 48), 
                      breaks = c(12, 20, 30, 40, 48)) +
